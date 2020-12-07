@@ -1,0 +1,275 @@
+---
+title: "Mixed-Effects Models with Longitudinal Data"
+subtitle: "STAT 340: Applied Regression"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lme4)
+library(ggplot2)
+
+chart_wide_condense <- read.csv("https://raw.githubusercontent.com/proback/BeyondMLR/master/data/chart_wide_condense.csv")
+```
+
+# Example: Charter Schools
+
+Charter schools first appeared in the United States in 1991 in Minnesota, and have spread across the country in the years since. Unlike public schools, charter schools are not obliged to follow many state guidelines, which allows them to extend the school day, and offer non-traditional techniques and styles of instruction and learning. 
+
+The KIPP (Knowledge is Power Program) Stand Academy in Minneapolis, MN is an example of a charter school, which stresses longer days and partnerships with parents. Purportedly, 80% of KIPP students go on to college from a population where 87% qualify for free and reduced lunch and 95% are African-American or Latino (KIPP 2018). This suggests that the unique structure of charter schools might improve student outcomes, relative to public schools, in general, but how to do we know for sure? 
+
+Because charter schools are relatively new in the United States, data has just begun to be collected to evaluate the performance of charter versus non-charter schools and some of the factors that influence a school’s performance. We will examine data collected by the Minnesota Department of Education for all Minnesota schools during the years 2008-2010.
+
+The variables are:
+
+- `schoolid`: includes district type, district number, and school number
+- `schoolName`: name of school
+- `urban`: is the school in an urban (1) or rural (0) location?
+- `charter`: is the school a charter school (1) or a non-charter public school (0)?
+- `schPctnonw`: proportion of non-white students in a school (based on 2010 figures)
+- `schPctsped`: proportion of special education students in a school (based on 2010 figures)
+- `schPctfree`: proportion of students who receive free or reduced lunches in a school (based on 2010 figures). This serves as a measure of poverty among school families.
+- `MathAvgScore.0`: average MCA-II math score for all sixth grade students in a school in 2008
+- `MathAvgScore.1`: average MCA-II math score for all sixth grade students in a school in 2009
+- `MathAvgScore.2`: average MCA-II math score for all sixth grade students in a school in 2010
+
+```{r}
+head(chart_wide_condense)
+dim(chart_wide_condense)
+```
+Note, these data are organized in wide form - one school per row. We have dealt mostly with long form data, and we will need that in these notes, so we need to convert these data from wide to long form:
+
+```{r warning=FALSE, fig.align='center'}
+library(tidyr)
+
+chart_long_condense <- gather(data=chart_wide_condense, 
+                              key=Time, 
+                              value=MathAvgScore, 
+                              MathAvgScore.0:MathAvgScore.2, #Names source columns contain values
+                              factor_key=TRUE)
+head(chart_long_condense)
+
+## Create new variable
+chart_long_condense$years_since_2008 <- rep(NA, nrow(chart_long_condense))
+chart_long_condense[chart_long_condense$Time=="MathAvgScore.0",]$years_since_2008 <- 0
+chart_long_condense[chart_long_condense$Time=="MathAvgScore.1",]$years_since_2008 <- 1
+chart_long_condense[chart_long_condense$Time=="MathAvgScore.2",]$years_since_2008 <- 2
+```
+
+
+# Longitudinal data
+
+- **Longitudinal data** refers to data that is collected on the same individuals/observations sequentially over time. - Generally, a longitudinal study results in **repeated measures on each individual/observation**.
+- Data that consist of these repeated measures are correlated within each individual/observation, so statistical models used to analyze them must take into account this within-subject correlation. This can be accomplished through mixed-effects modeling.
+
+# Visualizing longitudinal data
+
+## Lattice plot
+
+```{r fig.align='center'}
+id <- unique(chart_long_condense$schoolid)
+
+ggplot(chart_long_condense[chart_long_condense$schoolid %in% id[1:24],],
+       aes(x = years_since_2008, y = MathAvgScore)) +
+  geom_point() + 
+  geom_line() + 
+  facet_wrap(~schoolid,ncol=6) + 
+  scale_x_continuous(limits=c(0,2), breaks=c(0,1,2)) +
+  theme_bw() + 
+  theme(strip.text.x=element_blank()) + 
+  labs(x="Years since 2008",
+       y="Average Math Score")
+```
+
+
+## Spaghetti plot
+
+```{r fig.align='center', warning=FALSE}
+ggplot(data=chart_long_condense, aes(x=as.factor(years_since_2008), 
+                                     y=MathAvgScore, group=schoolid)) + 
+  geom_point() + 
+  geom_line(aes(color=as.factor(urban))) +
+  geom_smooth(se=FALSE) + 
+  xlab("Years since 2008") + 
+  ylab("Average Math Score") + 
+  theme_bw()
+```
+
+```{r fig.align='center', warning=FALSE}
+ggplot(data=chart_long_condense, aes(x=as.factor(years_since_2008), 
+                                     y=MathAvgScore, group=schoolid)) + 
+  geom_point() + 
+  geom_line(aes(color=as.factor(urban)) )+
+  geom_smooth(se=FALSE) + 
+  xlab("Years since 2008") + 
+  ylab("Average Math Score") + 
+  theme_bw() + 
+  facet_wrap(~charter)
+```
+
+*One of the assumptions we are thinking of making here is about linearity -- the linearity of Average Math Score as a function of time. These plots can help us assess the appropriateness of that assumption.*
+
+# Accounting for missing data
+
+- **Complete case analysis.** This is what we are doing in this lab for simplicity, so we can focus on the models. This is not necessarily the best approach.
+- **Last observation carried forward.** This is exactly what it sounds like -- if you have an observation in 2008 but not in 2009, for example, then you input the 2008 observation for 2009 for that school
+- **Imputation.** One could explore imputation methods. The main risks with these methods involve misrepresenting missing data and overstating precision (since we don't actually observe these values.)
+
+# Unconditional means model (LMM)
+
+$$
+Y_{ij}=\beta_0+\delta_{0i}+\epsilon_{ij}
+$$
+where $\delta_{0i}\sim Normal(0,\psi_0^2)$ and $\epsilon_{ij}\sim Normal(0,\sigma^2)$, where $\delta_{0i}$ and $\epsilon_{ij}$ are conditionally independent.
+
+- $Var(Y_{ij})=\psi_0^2+\sigma^2$
+- $Cov(Y_{ij},Y_{ij'})=\psi_0^2$ for $j\neq j'$
+
+## Charter schools - unconditional means model
+
+- $Y_{ij}$: the average math score for the $i^{th}$ school at time $j=0,1,2$, the number of years since 2008
+
+### Fit an unconditional means model for `MathAvgScore`; this should include a random intercept for each school.
+
+```{r}
+
+```
+
+# Intraclass correlation coefficient
+
+Under an assumption of compound symmetry (which is a way of describing the variance-covariance structure that arises when we have a model with a random intercept, but no other random effects), the resulting intraclass correlation coefficient is:
+
+\begin{align*}
+\rho&=\frac{Cov(Y_{ij},Y_{ij'})}{\sqrt{Var(Y_{ij})}\sqrt{Var(Y_{ij'})}}\\
+&=\frac{\psi_0^2}{\psi_0^2+\sigma^2}.
+\end{align*}
+
+The intraclass correlation coefficient (ICC) is the proportion of the variance that is attributable to an individual. *Recall, the ICC is bounded between 0 and 1, and if it is close to 0, this suggests that the observations (nested) within each individual are not highly correlated, so we may be able to use a fixed effects model, but we would need to do some model comparisons to be sure.* 
+
+
+### What is the estimated ICC for the unconditional means model you fit for `MathAvgScore` above? What is the interpretation?
+
+```{r}
+
+```
+
+# Random intercept (LMM)
+
+$$
+Y_{ij}=\beta_0+\beta_1t_{ij}+\delta_{0i}+\epsilon_{ij}
+$$
+where $\delta_{0i}\sim Normal(0,\psi_0^2)$ and $\epsilon_{ij}\sim Normal(0,\sigma^2)$, where $\delta_{0i}$ and $\epsilon_{ij}$ are conditionally independent.
+
+- $Var(Y_{ij})=\psi_0^2+\sigma^2$
+- $Cov(Y_{ij},Y_{ij'})=\psi_0^2$ for $j\neq j'$
+
+The random intercept implies an assumption of *compound symmetry*, meaning all response variables (here, `MathAchScore`) have the same variance and each pair (`MathAchScore` in the same school, $i$, taken at different times (years), $j$) has a common correlation.
+
+
+## Charter schools - random intercept model
+
+- $Y_{ij}$: the average math score for the $i^{th}$ school at time $j=0,1,2$, the number of years since 2008
+- $t_{ij}$: the number of years since 2008 for the $i^{th}$ school
+
+In this model, we estimate $\hat{\beta}_0$ (fixed effects intercept), $\hat{\beta}_1$ (fixed effect of time), $\hat{\psi}_0^2$ (variance of random intercepts), $\hat{\sigma}^2$ (variance of error), and $\hat{\rho}$ (ICC).
+
+### Fit a random intercept model for `MathAvgScore`; this should include a year effect, as well as a random intercept for each school.
+
+```{r}
+
+```
+
+### What is the estimate of the intercept, $\hat{\beta}_0$? What is the interpretation (hint: think carefully about what it means for time to be equal to 0 in this model)?
+
+
+
+### What is the estimate of the effect of time, $\hat{\beta}_1$? What is the interpretation?
+
+
+
+
+### What is the estimated ICC for the random intercept model? What is the interpretation? (Note: the `lmer()` function does not give this to you - you will need to calculate it using the formula given above for the ICC and the relevant output from R.)
+
+```{r}
+
+```
+
+
+
+# Random intercept and slope (trend model - LMM) 
+
+$$
+Y_{ij}=\beta_0+\beta_1t_{ij}+\delta_{0i} + \delta_{1i}t_{ij}+\epsilon_{ij}
+$$
+where $\epsilon_{ij}\sim Normal(0, \sigma^2)$ and 
+
+$$
+\left[\begin{matrix}\delta_{0i} \\ \delta_{1i} \end{matrix}\right] \sim Normal_2\left(\left[\begin{matrix} 0 \\ 0 \end{matrix}\right], \boldsymbol{\Psi}=\left[\begin{matrix} \psi_{0}^2 & \psi_{01} \\ \psi_{01} & \psi_1^2 \end{matrix}\right] \right)
+$$
+
+- $\psi_0^2$ gives the spread around the population intercept (i.e. when time is 0; we need this to be meaningful)
+- $\psi_1^2$ gives the spread in slopes (i.e. how different are people's slopes from one another?)
+- $\psi_{01}$ gives the relationship between them
+
+## Charter schools - trend model
+
+### Fit a trend model for `MathAvgScore`.
+
+```{r}
+
+```
+
+### If $\psi_{01} > 0$, then do individuals with higher initial measurements have larger slopes, or smaller?
+
+
+
+### What is $Var(Y_{ij})$?
+
+
+
+### What is $Cov(Y_{ij}, Y_{ij'})$?
+
+
+### What is the estimate of the variance associated with the random effect for time, $\hat{\psi}_1^2$? 
+
+
+
+### What is the estimate of the ICC in this model (R calculates this for you)? What does it mean?
+
+
+
+
+
+# Quadratic trend model (LMM)
+
+$$
+Y_{ij}=\beta_0+\beta_1t_{ij}+\beta_2t_{ij}^2+\delta_{0i} + \delta_{1i}t_{ij}+ \delta_{1i}t_{ij}^2+\epsilon_{ij}
+$$
+where $\epsilon_{ij}\sim Normal(0, \sigma^2)$ and 
+
+$$
+\left[\begin{matrix}\delta_{0i} \\ \delta_{1i} \\ \delta_{2i}\end{matrix}\right] \sim Normal_2\left(\left[\begin{matrix} 0 \\ 0 \\ 0\end{matrix}\right], \boldsymbol{\Psi}=\left[\begin{matrix} \psi_{0}^2 & \psi_{01} & \psi_{02}\\ \psi_{01} & \psi_1^2 & \psi_{12} \\ \psi_{02} & \psi_{12} & \psi_2^2\end{matrix}\right] \right)
+$$
+## Charter schools - quadratic trend model
+
+### Fit a quadratic trend model for `MathAvgScore`. What do you notice when you try to fit this model?
+
+```{r}
+
+```
+
+## Charter schools - quadratic fixed effects 
+
+### You should notice that the quadratic trend model is too complex for R to estimate all the effects, so we run into convergence issues. Simplify the quadratic trend model by fitting a model with quadratic fixed effects, but only a random intercept.
+
+```{r}
+
+```
+
+### The estimate of the effect of the quadratic term, $\hat{\beta}_2$ is positive. What does this mean in terms of the increases in test scores between 2009 and 2010 versus between 2008 and 2009?
+
+
+
+
+*Note, the objective of this lab was to explore different types of longitudinal models in the context of this data set. In practice, we would likely want to control for other variables in our model, which would lead to more fixed effects, at a minimum. To arrive at an acceptable model for these data, you would want to consider other models with more explanatory variables and perform formal model selection. This longitudinal approach also can be used in the context of GLMMs.*
